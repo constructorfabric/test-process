@@ -1,0 +1,73 @@
+name: Feature
+description: A roadmap deliverable. Group it under an area; break it into Task/Bug sub-issues.
+title: "[Feature] "
+type: Feature
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A **Feature** is a roadmap item. After creating it, add `area:*` (and `team:*`)
+        labels, set **Type = Feature**, and add its work as **sub-issues** (Task/Bug).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What are we delivering and why? User-facing value.
+      placeholder: As a <user> I want <capability> so that <value>.
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      description: Which product area? (will be applied as area:* label)
+      placeholder: connectors
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know this is done?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: checkboxes
+    id: gates
+    attributes:
+      label: Gates
+      description: Soft quality gates. Tick when passed (Architecture may be N/A for pure UI work).
+      options:
+        - label: Requirements approved (PO / owner)
+        - label: Architecture review passed (architect) — or N/A
+        - label: QA passed (QA)
+  - type: input
+    id: design-pr
+    attributes:
+      label: Design PR / ADR
+      description: Link to the design doc / ADR PR backing the architecture gate (if any).
+      placeholder: "https://github.com/constructorfabric/<repo>/pull/<n>"
+    validations:
+      required: false
+  - type: textarea
+    id: release-note
+    attributes:
+      label: Product release note
+      description: Customer-facing wording for the monthly release rollup. What changed for the user?
+      placeholder: |
+        User-visible change: ...
+        Breaking change: Yes / No
+        Migration required: Yes / No
+        Docs required: Yes / No
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / links
+      description: Dependencies, related issues, anything else.
+    validations:
+      required: false
