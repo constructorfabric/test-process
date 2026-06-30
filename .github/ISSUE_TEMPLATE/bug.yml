@@ -1,0 +1,50 @@
+name: Bug
+description: Something is broken. Link to the Feature it affects if relevant.
+title: "[Bug] "
+type: Bug
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What's wrong
+      description: What happened vs what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: parent
+    attributes:
+      label: Related feature
+      description: Feature issue number this bug belongs to (leave empty if standalone).
+      placeholder: "#300"
+    validations:
+      required: false
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How bad is the impact? (When we fix it = which milestone it's assigned to.)
+      options:
+        - blocker — blocks release / data loss
+        - critical — major broken behavior, no workaround
+        - major — broken behavior with a workaround
+        - minor — small / cosmetic
+    validations:
+      required: false
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Version / build, product, where it happened.
+    validations:
+      required: false
