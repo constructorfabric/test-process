@@ -1,11 +1,11 @@
-# Помечает просроченные issue: срок milestone (YY.MM) прошёл, а issue ещё открыт.
-# Запускается раз в сутки по расписанию (и вручную кнопкой).
+# Flags overdue issues: the milestone (YY.MM) due date has passed but the issue is still open.
+# Runs once a day on a schedule (and manually via the button).
 name: Flag overdue issues
 
 on:
   schedule:
-    - cron: "0 6 * * *"     # каждый день в 06:00 UTC
-  workflow_dispatch: {}      # позволяет запустить руками из вкладки Actions
+    - cron: "0 6 * * *"     # every day at 06:00 UTC
+  workflow_dispatch: {}      # allows manual runs from the Actions tab
 
 jobs:
   flag:
@@ -18,18 +18,18 @@ jobs:
           script: |
             const now = new Date();
 
-            // забираем все открытые issue (с разбивкой по страницам)
+            // fetch all open issues (paginated)
             const issues = await github.paginate(
               github.rest.issues.listForRepo,
               { ...context.repo, state: "open", per_page: 100 }
             );
 
             for (const issue of issues) {
-              if (issue.pull_request) continue;            // PR пропускаем
+              if (issue.pull_request) continue;            // skip PRs
 
               const due = issue.milestone && issue.milestone.due_on
                 ? new Date(issue.milestone.due_on) : null;
-              const overdue = due !== null && due < now;   // срок milestone прошёл
+              const overdue = due !== null && due < now;   // milestone due date passed
 
               const has = (issue.labels || []).some(l => (l.name || l) === "overdue");
 
