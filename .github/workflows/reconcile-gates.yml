@@ -1,7 +1,7 @@
 # Nightly reconcile: the checkbox in the Feature body is the source of truth; the project
 # gate fields are its mirror. A human can edit a field directly in the project view, which
 # drifts it out of sync with the checklist. This job sweeps all open issues once a day and
-# heals each gate field back to match its checkbox. Manual "N/A" is sticky and left alone.
+# heals each gate field back to match its checkbox (gates are binary -- no "N/A").
 #
 # Same two-token setup as mirror-gates: PROJECTS_TOKEN writes fields, GITHUB_TOKEN comments.
 name: Reconcile gate fields with checklists
@@ -83,8 +83,6 @@ jobs:
                   const want    = isChecked(body, g.match);
                   const current = curr[g.field];
 
-                  if (current === "N/A") continue;   // sticky
-
                   if (want && current !== "Passed") {
                     await github.graphql(`
                       mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
@@ -93,7 +91,7 @@ jobs:
                         }){ clientMutationId }
                       }`, { p: proj.id, i: item.id, f: def.id, o: passed.id });
                     await comment(issue.number, `🔧 Reconciled: **${g.name}** set to \`Passed\` to match the checklist (the field had drifted).`);
-                  } else if (!want && current === "Passed") {
+                  } else if (!want && current) {
                     await github.graphql(`
                       mutation($p:ID!,$i:ID!,$f:ID!){
                         clearProjectV2ItemFieldValue(input:{
