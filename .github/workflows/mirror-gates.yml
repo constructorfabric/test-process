@@ -1,5 +1,7 @@
 # Mirror bot: gate checkboxes in the issue body -> labels (so the board can filter on them).
 # gate:5-resolved is an aggregate: added/removed automatically once all four gates are ticked.
+# On every gate transition the bot also posts an attributed comment (who + when) so
+# accountability is visible in the timeline instead of just "bot added a label".
 # Runs on issue create/edit.
 name: Mirror gate checkboxes to labels
 
@@ -11,21 +13,22 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      issues: write          # bot needs permission to add/remove labels
+      issues: write          # bot needs permission to add/remove labels and comment
     steps:
       - uses: actions/github-script@v7
         with:
           script: |
             const issue = context.payload.issue;
             const body = issue.body || "";
+            const actor = context.payload.sender ? context.payload.sender.login : "unknown";
 
-            // checklist line (substring match) -> label to set when ticked [x].
+            // checklist line (substring match) -> label + human-readable name.
             // "specs" also matches the legacy text "Requirements approved" (back-compat).
             const gates = [
-              { match: /specs approved|requirements approved/i, label: "gate:1-specs"     },
-              { match: /architecture review passed/i,           label: "gate:2-architect" },
-              { match: /development complete/i,                 label: "gate:3-dev"       },
-              { match: /qa passed/i,                            label: "gate:4-qa"        },
+              { match: /specs approved|requirements approved/i, label: "gate:1-specs",     name: "Specs" },
+              { match: /architecture review passed/i,           label: "gate:2-architect", name: "Architecture review" },
+              { match: /development complete/i,                 label: "gate:3-dev",       name: "Development" },
+              { match: /qa passed/i,                            label: "gate:4-qa",        name: "QA" },
             ];
 
             const lines = body.split("\n");
@@ -35,7 +38,12 @@ jobs:
 
             const current = new Set((issue.labels || []).map(l => l.name || l));
 
-            // mirror the 4 gates and track whether all are set
+            const comment = (text) =>
+              github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number, body: text,
+              });
+
+            // mirror the 4 gates, comment on each transition, and track whether all are set
             let allGates = true;
             for (const g of gates) {
               const want = isChecked(g.match);
@@ -45,10 +53,12 @@ jobs:
                 await github.rest.issues.addLabels({
                   ...context.repo, issue_number: issue.number, labels: [g.label],
                 });
+                await comment(`✅ Gate **${g.name}** passed — by @${actor}`);
               } else if (!want && has) {
                 await github.rest.issues.removeLabel({
                   ...context.repo, issue_number: issue.number, name: g.label,
                 }).catch(() => {});   // label may already be gone -- don't fail
+                await comment(`⚪ Gate **${g.name}** unchecked — by @${actor}`);
               }
             }
 
@@ -59,8 +69,10 @@ jobs:
               await github.rest.issues.addLabels({
                 ...context.repo, issue_number: issue.number, labels: [resolved],
               });
+              await comment(`🏁 **Resolved** — all four gates passed (last by @${actor})`);
             } else if (!allGates && hasResolved) {
               await github.rest.issues.removeLabel({
                 ...context.repo, issue_number: issue.number, name: resolved,
               }).catch(() => {});
+              await comment(`↩️ **Resolved** cleared — a gate was un-ticked (by @${actor})`);
             }
