@@ -1,0 +1,69 @@
+# Flags a broken planning promise: an issue whose project "Commitment" = Committed but whose
+# milestone is missing or already overdue. A Committed item must carry a live milestone --
+# this detects (not prevents) the cases where it doesn't. Adds/removes the commitment-risk label.
+#
+# Two tokens: PROJECTS_TOKEN reads the project Commitment field; GITHUB_TOKEN labels as the bot.
+name: Flag commitment risk
+
+on:
+  schedule:
+    - cron: "30 5 * * *"    # daily 05:30 UTC (after reconcile, before overdue)
+  workflow_dispatch: {}
+
+jobs:
+  flag:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
+          script: |
+            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            const now = new Date();
+            const RISK = "commitment-risk";
+
+            const issues = await github.paginate(
+              github.rest.issues.listForRepo,
+              { ...context.repo, state: "open", per_page: 100 }
+            );
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+
+              // milestone missing, or has a due date that already passed
+              const due = issue.milestone && issue.milestone.due_on
+                ? new Date(issue.milestone.due_on) : null;
+              const milestoneBad = (issue.milestone == null) || (due !== null && due < now);
+
+              // is this issue Committed in any project it belongs to?
+              const data = await github.graphql(`
+                query($id:ID!){
+                  node(id:$id){ ... on Issue {
+                    projectItems(first:20){ nodes {
+                      fieldValueByName(name:"Commitment"){
+                        ... on ProjectV2ItemFieldSingleSelectValue { name }
+                      }
+                    } }
+                  } }
+                }`, { id: issue.node_id });
+
+              const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
+              const committed = items.some(it => it.fieldValueByName && it.fieldValueByName.name === "Committed");
+
+              const risk = committed && milestoneBad;
+              const has  = (issue.labels || []).some(l => (l.name || l) === RISK);
+
+              if (risk && !has) {
+                await bot.rest.issues.addLabels({
+                  ...context.repo, issue_number: issue.number, labels: [RISK],
+                });
+              } else if (!risk && has) {
+                await bot.rest.issues.removeLabel({
+                  ...context.repo, issue_number: issue.number, name: RISK,
+                }).catch(() => {});
+              }
+            }
