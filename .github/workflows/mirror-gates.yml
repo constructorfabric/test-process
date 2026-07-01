@@ -3,8 +3,11 @@
 # (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked.
 # - Unchecking clears the field ONLY if it was "Passed" (a manually-set "N/A" is preserved).
 # - On every transition it posts an attributed comment, so the timeline shows who + when.
-# Needs a token with project write access, provided as the PROJECTS_TOKEN secret
-# (repo-level today; drop-in replaceable by an org secret / GitHub App later — same name).
+#
+# Two tokens on purpose:
+#   * PROJECTS_TOKEN (a PAT) writes the project fields -- the default GITHUB_TOKEN cannot.
+#   * the default GITHUB_TOKEN posts the comments, so their author is github-actions[bot]
+#     (not the PAT owner). The human who toggled the gate is named in the comment text.
 name: Mirror gate checkboxes to project fields
 
 on:
@@ -14,14 +17,25 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write          # lets the default GITHUB_TOKEN post comments as the bot
     steps:
       - uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # bot token, used only for comments
         with:
-          github-token: ${{ secrets.PROJECTS_TOKEN }}
+          github-token: ${{ secrets.PROJECTS_TOKEN }}   # PAT, used for project field writes
           script: |
             const issue = context.payload.issue;
             const body = issue.body || "";
             const actor = context.payload.sender ? context.payload.sender.login : "unknown";
+
+            // comments go through the default bot token so the author is github-actions[bot]
+            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            const comment = (text) =>
+              bot.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number, body: text,
+              });
 
             // checklist line (substring match) -> project field name + human-readable name.
             // "specs" also matches the legacy text "Requirements approved" (back-compat).
@@ -58,11 +72,6 @@ jobs:
               }`, { id: issue.node_id });
 
             const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
-
-            const comment = (text) =>
-              github.rest.issues.createComment({
-                ...context.repo, issue_number: issue.number, body: text,
-              });
 
             for (const item of items) {
               const proj = item.project;
