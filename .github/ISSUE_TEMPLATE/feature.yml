@@ -39,10 +39,14 @@ body:
     id: gates
     attributes:
       label: Gates
-      description: Soft quality gates. Tick when passed (Architecture may be N/A for pure UI work).
+      description: >-
+        Soft quality gates — tick when passed (Architecture may be N/A for pure UI work).
+        Each ticked box is mirrored to a gate:* label. "Resolved" is NOT a box — it is
+        auto-derived (gate:5-resolved) once all four below are ticked.
       options:
-        - label: Requirements approved (PO / owner)
+        - label: Specs approved & verified (PO / owner)
         - label: Architecture review passed (architect) — or N/A
+        - label: Development complete
         - label: QA passed (QA)
   - type: input
     id: design-pr

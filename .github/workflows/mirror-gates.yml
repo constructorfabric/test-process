@@ -1,5 +1,6 @@
-# Бот-зеркало: галочки гейтов в теле issue → метки (чтобы доска могла фильтровать).
-# Срабатывает при создании/редактировании issue.
+# Mirror bot: gate checkboxes in the issue body -> labels (so the board can filter on them).
+# gate:5-resolved is an aggregate: added/removed automatically once all four gates are ticked.
+# Runs on issue create/edit.
 name: Mirror gate checkboxes to labels
 
 on:
@@ -10,7 +11,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      issues: write          # боту нужно право вешать/снимать метки
+      issues: write          # bot needs permission to add/remove labels
     steps:
       - uses: actions/github-script@v7
         with:
@@ -18,22 +19,27 @@ jobs:
             const issue = context.payload.issue;
             const body = issue.body || "";
 
-            // строка чек-листа (по подстроке) -> метка, которую ставим когда отмечено [x]
+            // checklist line (substring match) -> label to set when ticked [x].
+            // "specs" also matches the legacy text "Requirements approved" (back-compat).
             const gates = [
-              { match: /requirements approved/i, label: "reqs-approved" },
-              { match: /architecture review passed/i, label: "arch-passed" },
-              { match: /qa passed/i,               label: "qa-passed"   },
+              { match: /specs approved|requirements approved/i, label: "gate:1-specs"     },
+              { match: /architecture review passed/i,           label: "gate:2-architect" },
+              { match: /development complete/i,                 label: "gate:3-dev"       },
+              { match: /qa passed/i,                            label: "gate:4-qa"        },
             ];
 
             const lines = body.split("\n");
-            // отмечено = строка вида "- [x] ... <текст гейта>"
+            // ticked = a line like "- [x] ... <gate text>"
             const isChecked = (re) =>
               lines.some(l => /^\s*-\s*\[[xX]\]/.test(l) && re.test(l));
 
             const current = new Set((issue.labels || []).map(l => l.name || l));
 
+            // mirror the 4 gates and track whether all are set
+            let allGates = true;
             for (const g of gates) {
               const want = isChecked(g.match);
+              if (!want) allGates = false;
               const has  = current.has(g.label);
               if (want && !has) {
                 await github.rest.issues.addLabels({
@@ -42,6 +48,19 @@ jobs:
               } else if (!want && has) {
                 await github.rest.issues.removeLabel({
                   ...context.repo, issue_number: issue.number, name: g.label,
-                }).catch(() => {});   // метки могло уже не быть — не падаем
+                }).catch(() => {});   // label may already be gone -- don't fail
               }
+            }
+
+            // gate:5-resolved is NOT a checkbox but an aggregate: set once all 4 are ticked.
+            const resolved = "gate:5-resolved";
+            const hasResolved = current.has(resolved);
+            if (allGates && !hasResolved) {
+              await github.rest.issues.addLabels({
+                ...context.repo, issue_number: issue.number, labels: [resolved],
+              });
+            } else if (!allGates && hasResolved) {
+              await github.rest.issues.removeLabel({
+                ...context.repo, issue_number: issue.number, name: resolved,
+              }).catch(() => {});
             }
