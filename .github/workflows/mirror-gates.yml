@@ -1,9 +1,11 @@
-# Mirror bot: gate checkboxes in the issue body -> labels (so the board can filter on them).
-# gate:5-resolved is an aggregate: added/removed automatically once all four gates are ticked.
-# On every gate transition the bot also posts an attributed comment (who + when) so
-# accountability is visible in the timeline instead of just "bot added a label".
-# Runs on issue create/edit.
-name: Mirror gate checkboxes to labels
+# Mirror bot: gate checkboxes in a Feature body -> single-select fields on the project card.
+# Project-agnostic: for every project the issue belongs to, it finds the gate fields BY NAME
+# (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked.
+# - Unchecking clears the field ONLY if it was "Passed" (a manually-set "N/A" is preserved).
+# - On every transition it posts an attributed comment, so the timeline shows who + when.
+# Needs a token with project write access, provided as the PROJECTS_TOKEN secret
+# (repo-level today; drop-in replaceable by an org secret / GitHub App later — same name).
+name: Mirror gate checkboxes to project fields
 
 on:
   issues:
@@ -12,23 +14,22 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write          # bot needs permission to add/remove labels and comment
     steps:
       - uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
           script: |
             const issue = context.payload.issue;
             const body = issue.body || "";
             const actor = context.payload.sender ? context.payload.sender.login : "unknown";
 
-            // checklist line (substring match) -> label + human-readable name.
+            // checklist line (substring match) -> project field name + human-readable name.
             // "specs" also matches the legacy text "Requirements approved" (back-compat).
             const gates = [
-              { match: /specs approved|requirements approved/i, label: "gate:1-specs",     name: "Specs" },
-              { match: /architecture review passed/i,           label: "gate:2-architect", name: "Architecture review" },
-              { match: /development complete/i,                 label: "gate:3-dev",       name: "Development" },
-              { match: /qa passed/i,                            label: "gate:4-qa",        name: "QA" },
+              { match: /specs approved|requirements approved/i, field: "Specs",     name: "Specs" },
+              { match: /architecture review passed/i,           field: "Architect", name: "Architecture review" },
+              { match: /development complete/i,                 field: "Dev",       name: "Development" },
+              { match: /qa passed/i,                            field: "QA",        name: "QA" },
             ];
 
             const lines = body.split("\n");
@@ -36,43 +37,69 @@ jobs:
             const isChecked = (re) =>
               lines.some(l => /^\s*-\s*\[[xX]\]/.test(l) && re.test(l));
 
-            const current = new Set((issue.labels || []).map(l => l.name || l));
+            // find every project the issue is on, with each project's fields + current values
+            const data = await github.graphql(`
+              query($id:ID!){
+                node(id:$id){ ... on Issue {
+                  projectItems(first:20){ nodes {
+                    id
+                    project { id
+                      fields(first:50){ nodes {
+                        ... on ProjectV2SingleSelectField { id name options { id name } }
+                      } }
+                    }
+                    fieldValues(first:50){ nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name field { ... on ProjectV2SingleSelectField { name } }
+                      }
+                    } }
+                  } }
+                } }
+              }`, { id: issue.node_id });
+
+            const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
 
             const comment = (text) =>
               github.rest.issues.createComment({
                 ...context.repo, issue_number: issue.number, body: text,
               });
 
-            // mirror the 4 gates, comment on each transition, and track whether all are set
-            let allGates = true;
-            for (const g of gates) {
-              const want = isChecked(g.match);
-              if (!want) allGates = false;
-              const has  = current.has(g.label);
-              if (want && !has) {
-                await github.rest.issues.addLabels({
-                  ...context.repo, issue_number: issue.number, labels: [g.label],
-                });
-                await comment(`✅ Gate **${g.name}** passed — by @${actor}`);
-              } else if (!want && has) {
-                await github.rest.issues.removeLabel({
-                  ...context.repo, issue_number: issue.number, name: g.label,
-                }).catch(() => {});   // label may already be gone -- don't fail
-                await comment(`⚪ Gate **${g.name}** unchecked — by @${actor}`);
-              }
-            }
+            for (const item of items) {
+              const proj = item.project;
+              const fieldDefs = proj.fields.nodes.filter(f => f && f.name);
 
-            // gate:5-resolved is NOT a checkbox but an aggregate: set once all 4 are ticked.
-            const resolved = "gate:5-resolved";
-            const hasResolved = current.has(resolved);
-            if (allGates && !hasResolved) {
-              await github.rest.issues.addLabels({
-                ...context.repo, issue_number: issue.number, labels: [resolved],
-              });
-              await comment(`🏁 **Resolved** — all four gates passed (last by @${actor})`);
-            } else if (!allGates && hasResolved) {
-              await github.rest.issues.removeLabel({
-                ...context.repo, issue_number: issue.number, name: resolved,
-              }).catch(() => {});
-              await comment(`↩️ **Resolved** cleared — a gate was un-ticked (by @${actor})`);
+              // current single-select value per field name ("Passed" | "N/A" | undefined)
+              const curr = {};
+              for (const v of item.fieldValues.nodes) {
+                if (v && v.field && v.name) curr[v.field.name] = v.name;
+              }
+
+              for (const g of gates) {
+                const def = fieldDefs.find(f => f.name === g.field);
+                if (!def) continue;                        // project lacks this gate field -> skip
+                const passed = def.options.find(o => o.name === "Passed");
+                if (!passed) continue;
+
+                const want    = isChecked(g.match);
+                const current = curr[g.field];
+
+                if (want && current !== "Passed") {
+                  await github.graphql(`
+                    mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
+                      updateProjectV2ItemFieldValue(input:{
+                        projectId:$p, itemId:$i, fieldId:$f, value:{ singleSelectOptionId:$o }
+                      }){ clientMutationId }
+                    }`, { p: proj.id, i: item.id, f: def.id, o: passed.id });
+                  await comment(`✅ Gate **${g.name}** passed — by @${actor}`);
+                } else if (!want && current === "Passed") {
+                  // clear only when it was "Passed" -- never wipe a manual "N/A"
+                  await github.graphql(`
+                    mutation($p:ID!,$i:ID!,$f:ID!){
+                      clearProjectV2ItemFieldValue(input:{
+                        projectId:$p, itemId:$i, fieldId:$f
+                      }){ clientMutationId }
+                    }`, { p: proj.id, i: item.id, f: def.id });
+                  await comment(`⚪ Gate **${g.name}** unchecked — by @${actor}`);
+                }
+              }
             }
