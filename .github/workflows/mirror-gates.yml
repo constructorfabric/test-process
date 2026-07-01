@@ -41,10 +41,11 @@ jobs:
             // checklist line (substring match) -> project field name + human-readable name.
             // "specs" also matches the legacy text "Requirements approved" (back-compat).
             const gates = [
-              { match: /specs approved|requirements approved/i, field: "Specs",     name: "Specs" },
-              { match: /architecture review passed/i,           field: "Architect", name: "Architecture review" },
-              { match: /development complete/i,                 field: "Dev",       name: "Development" },
-              { match: /qa passed/i,                            field: "QA",        name: "QA" },
+              { match: /specifications accepted|specs approved|requirements approved/i, field: "Specs",         name: "Specifications" },
+              { match: /architecture design passed|architecture review passed/i,        field: "Architecture",  name: "Architecture design" },
+              { match: /development done|development complete/i,                        field: "Dev",           name: "Development" },
+              { match: /testing done|qa passed/i,                                       field: "Testing",       name: "Testing" },
+              { match: /release notes accepted/i,                                       field: "Release notes", name: "Release notes" },
             ];
 
             const lines = body.split("\n");
