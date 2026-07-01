@@ -1,7 +1,8 @@
 # Mirror bot: gate checkboxes in a Feature body -> single-select fields on the project card.
 # Project-agnostic: for every project the issue belongs to, it finds the gate fields BY NAME
-# (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked.
-# - Unchecking clears the field ONLY if it was "Passed" (a manually-set "N/A" is preserved).
+# (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked,
+# or clears them when it is unticked. Gates are binary -- there is no "N/A"; if a gate does
+# not apply (e.g. no architecture review needed), just tick it as passed.
 # - On every transition it posts an attributed comment, so the timeline shows who + when.
 #
 # Two tokens on purpose:
@@ -92,10 +93,6 @@ jobs:
                 const want    = isChecked(g.match);
                 const current = curr[g.field];
 
-                // "N/A" is sticky: set by a human to mean "not applicable" and never
-                // overwritten by the bot (a checkbox can't express N/A).
-                if (current === "N/A") continue;
-
                 if (want && current !== "Passed") {
                   await github.graphql(`
                     mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
@@ -104,8 +101,8 @@ jobs:
                       }){ clientMutationId }
                     }`, { p: proj.id, i: item.id, f: def.id, o: passed.id });
                   await comment(`✅ Gate **${g.name}** passed — by @${actor}`);
-                } else if (!want && current === "Passed") {
-                  // clear only when it was "Passed" -- never wipe a manual "N/A"
+                } else if (!want && current) {
+                  // box unticked but the field still has a value -> clear it
                   await github.graphql(`
                     mutation($p:ID!,$i:ID!,$f:ID!){
                       clearProjectV2ItemFieldValue(input:{
