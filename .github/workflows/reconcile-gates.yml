@@ -1,0 +1,107 @@
+# Nightly reconcile: the checkbox in the Feature body is the source of truth; the project
+# gate fields are its mirror. A human can edit a field directly in the project view, which
+# drifts it out of sync with the checklist. This job sweeps all open issues once a day and
+# heals each gate field back to match its checkbox. Manual "N/A" is sticky and left alone.
+#
+# Same two-token setup as mirror-gates: PROJECTS_TOKEN writes fields, GITHUB_TOKEN comments.
+name: Reconcile gate fields with checklists
+
+on:
+  schedule:
+    - cron: "0 5 * * *"     # every day at 05:00 UTC
+  workflow_dispatch: {}      # run manually from the Actions tab
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
+          script: |
+            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            const comment = (n, text) =>
+              bot.rest.issues.createComment({ ...context.repo, issue_number: n, body: text });
+
+            const gates = [
+              { match: /specs approved|requirements approved/i, field: "Specs",     name: "Specs" },
+              { match: /architecture review passed/i,           field: "Architect", name: "Architecture review" },
+              { match: /development complete/i,                 field: "Dev",       name: "Development" },
+              { match: /qa passed/i,                            field: "QA",        name: "QA" },
+            ];
+            const isChecked = (body, re) =>
+              body.split("\n").some(l => /^\s*-\s*\[[xX]\]/.test(l) && re.test(l));
+
+            const issues = await github.paginate(
+              github.rest.issues.listForRepo,
+              { ...context.repo, state: "open", per_page: 100 }
+            );
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              const body = issue.body || "";
+
+              const data = await github.graphql(`
+                query($id:ID!){
+                  node(id:$id){ ... on Issue {
+                    projectItems(first:20){ nodes {
+                      id
+                      project { id
+                        fields(first:50){ nodes {
+                          ... on ProjectV2SingleSelectField { id name options { id name } }
+                        } }
+                      }
+                      fieldValues(first:50){ nodes {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name field { ... on ProjectV2SingleSelectField { name } }
+                        }
+                      } }
+                    } }
+                  } }
+                }`, { id: issue.node_id });
+
+              const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
+
+              for (const item of items) {
+                const proj = item.project;
+                const fieldDefs = proj.fields.nodes.filter(f => f && f.name);
+                const curr = {};
+                for (const v of item.fieldValues.nodes) {
+                  if (v && v.field && v.name) curr[v.field.name] = v.name;
+                }
+
+                for (const g of gates) {
+                  const def = fieldDefs.find(f => f.name === g.field);
+                  if (!def) continue;
+                  const passed = def.options.find(o => o.name === "Passed");
+                  if (!passed) continue;
+
+                  const want    = isChecked(body, g.match);
+                  const current = curr[g.field];
+
+                  if (current === "N/A") continue;   // sticky
+
+                  if (want && current !== "Passed") {
+                    await github.graphql(`
+                      mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
+                        updateProjectV2ItemFieldValue(input:{
+                          projectId:$p, itemId:$i, fieldId:$f, value:{ singleSelectOptionId:$o }
+                        }){ clientMutationId }
+                      }`, { p: proj.id, i: item.id, f: def.id, o: passed.id });
+                    await comment(issue.number, `🔧 Reconciled: **${g.name}** set to \`Passed\` to match the checklist (the field had drifted).`);
+                  } else if (!want && current === "Passed") {
+                    await github.graphql(`
+                      mutation($p:ID!,$i:ID!,$f:ID!){
+                        clearProjectV2ItemFieldValue(input:{
+                          projectId:$p, itemId:$i, fieldId:$f
+                        }){ clientMutationId }
+                      }`, { p: proj.id, i: item.id, f: def.id });
+                    await comment(issue.number, `🔧 Reconciled: **${g.name}** cleared to match the checklist (the field had drifted).`);
+                  }
+                }
+              }
+            }
