@@ -92,6 +92,10 @@ jobs:
                 const want    = isChecked(g.match);
                 const current = curr[g.field];
 
+                // "N/A" is sticky: set by a human to mean "not applicable" and never
+                // overwritten by the bot (a checkbox can't express N/A).
+                if (current === "N/A") continue;
+
                 if (want && current !== "Passed") {
                   await github.graphql(`
                     mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
