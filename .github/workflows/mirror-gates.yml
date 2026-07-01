@@ -1,10 +1,14 @@
 # Mirror bot: gate checkboxes in a Feature body -> single-select fields on the project card.
 # Project-agnostic: for every project the issue belongs to, it finds the gate fields BY NAME
-# (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked.
-# - Unchecking clears the field ONLY if it was "Passed" (a manually-set "N/A" is preserved).
+# (Specs / Architect / Dev / QA) and sets them to "Passed" when the matching box is ticked,
+# or clears them when it is unticked. Gates are binary -- there is no "N/A"; if a gate does
+# not apply (e.g. no architecture review needed), just tick it as passed.
 # - On every transition it posts an attributed comment, so the timeline shows who + when.
-# Needs a token with project write access, provided as the PROJECTS_TOKEN secret
-# (repo-level today; drop-in replaceable by an org secret / GitHub App later — same name).
+#
+# Two tokens on purpose:
+#   * PROJECTS_TOKEN (a PAT) writes the project fields -- the default GITHUB_TOKEN cannot.
+#   * the default GITHUB_TOKEN posts the comments, so their author is github-actions[bot]
+#     (not the PAT owner). The human who toggled the gate is named in the comment text.
 name: Mirror gate checkboxes to project fields
 
 on:
@@ -14,22 +18,34 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write          # lets the default GITHUB_TOKEN post comments as the bot
     steps:
       - uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # bot token, used only for comments
         with:
-          github-token: ${{ secrets.PROJECTS_TOKEN }}
+          github-token: ${{ secrets.PROJECTS_TOKEN }}   # PAT, used for project field writes
           script: |
             const issue = context.payload.issue;
             const body = issue.body || "";
             const actor = context.payload.sender ? context.payload.sender.login : "unknown";
 
+            // comments go through the default bot token so the author is github-actions[bot]
+            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            const comment = (text) =>
+              bot.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number, body: text,
+              });
+
             // checklist line (substring match) -> project field name + human-readable name.
             // "specs" also matches the legacy text "Requirements approved" (back-compat).
             const gates = [
-              { match: /specs approved|requirements approved/i, field: "Specs",     name: "Specs" },
-              { match: /architecture review passed/i,           field: "Architect", name: "Architecture review" },
-              { match: /development complete/i,                 field: "Dev",       name: "Development" },
-              { match: /qa passed/i,                            field: "QA",        name: "QA" },
+              { match: /specifications accepted|specs approved|requirements approved/i, field: "Specs",         name: "Specifications" },
+              { match: /architecture design passed|architecture review passed/i,        field: "Architecture",  name: "Architecture design" },
+              { match: /development done|development complete/i,                        field: "Dev",           name: "Development" },
+              { match: /testing done|qa passed/i,                                       field: "Testing",       name: "Testing" },
+              { match: /release notes accepted/i,                                       field: "Release notes", name: "Release notes" },
             ];
 
             const lines = body.split("\n");
@@ -59,11 +75,6 @@ jobs:
 
             const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
 
-            const comment = (text) =>
-              github.rest.issues.createComment({
-                ...context.repo, issue_number: issue.number, body: text,
-              });
-
             for (const item of items) {
               const proj = item.project;
               const fieldDefs = proj.fields.nodes.filter(f => f && f.name);
@@ -91,8 +102,8 @@ jobs:
                       }){ clientMutationId }
                     }`, { p: proj.id, i: item.id, f: def.id, o: passed.id });
                   await comment(`✅ Gate **${g.name}** passed — by @${actor}`);
-                } else if (!want && current === "Passed") {
-                  // clear only when it was "Passed" -- never wipe a manual "N/A"
+                } else if (!want && current) {
+                  // box unticked but the field still has a value -> clear it
                   await github.graphql(`
                     mutation($p:ID!,$i:ID!,$f:ID!){
                       clearProjectV2ItemFieldValue(input:{

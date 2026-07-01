@@ -40,14 +40,15 @@ body:
     attributes:
       label: Gates
       description: >-
-        Soft quality gates — tick when passed (Architecture may be N/A for pure UI work).
-        Each ticked box is mirrored to a gate:* label. "Resolved" is NOT a box — it is
-        auto-derived (gate:5-resolved) once all four below are ticked.
+        Soft quality gates. Tick when passed — a bot then sets the matching project field
+        (Specs / Architecture / Dev / Testing / Release notes) to "Passed". Gates are binary:
+        if a gate does not apply (e.g. no architecture design needed), just tick it as passed.
       options:
-        - label: Specs approved & verified (PO / owner)
-        - label: Architecture review passed (architect) — or N/A
-        - label: Development complete
-        - label: QA passed (QA)
+        - label: Specifications accepted
+        - label: Architecture design passed
+        - label: Development done
+        - label: Testing done
+        - label: Release notes accepted
   - type: input
     id: design-pr
     attributes:
