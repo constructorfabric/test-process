@@ -9,7 +9,7 @@ body:
       value: |
         A **Task** is granular work. Attach it as a **sub-issue** of its Feature
         (from the Feature → Sub-issues → Add). Standalone tasks are fine — for upkeep add
-        the `chore` label, for research add the `spike` label, and give it an `initiative:*`
+        the `chore` label, for research add the `spike` label, and give it an `area:*`
         label so it still appears on the roadmap.
   - type: textarea
     id: what
