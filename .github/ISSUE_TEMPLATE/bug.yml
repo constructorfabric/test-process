@@ -2,7 +2,7 @@ name: Bug
 description: Something is broken. Link to the Feature it affects if relevant.
 title: "[Bug] "
 type: Bug
-labels: [bug]
+labels: []
 body:
   - type: textarea
     id: what
