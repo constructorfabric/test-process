@@ -32,7 +32,11 @@ jobs:
             const actor = context.payload.sender ? context.payload.sender.login : "unknown";
 
             // comments go through the default bot token so the author is github-actions[bot]
-            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            // second client on the default token so comments are authored by github-actions[bot].
+            // (github-script can't `require('@actions/github')`; reuse the running client's class.)
+            let bot;
+            try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
+            catch (e) { bot = github; }   // fall back to the PAT client rather than break field writes
             const comment = (text) =>
               bot.rest.issues.createComment({
                 ...context.repo, issue_number: issue.number, body: text,
