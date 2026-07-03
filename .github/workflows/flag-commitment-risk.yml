@@ -22,7 +22,11 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_TOKEN }}
           script: |
-            const bot = require('@actions/github').getOctokit(process.env.GH_TOKEN);
+            // second client on the default token so label ops are authored by github-actions[bot].
+            // (github-script can't `require('@actions/github')`; reuse the running client's class.)
+            let bot;
+            try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
+            catch (e) { bot = github; }   // fall back to the PAT client rather than break the run
             const now = new Date();
             const RISK = "commitment-risk";
 
