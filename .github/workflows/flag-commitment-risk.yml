@@ -1,13 +1,14 @@
 # Flags a broken planning promise: an issue whose project "Commitment" = Committed but whose
-# milestone is missing or already overdue. A Committed item must carry a live milestone --
+# "Target date" is missing or already passed. A Committed item must carry a live date --
 # this detects (not prevents) the cases where it doesn't. Adds/removes the commitment-risk label.
+# (Re-based off native milestone onto the Target date field, which is derived from Release.)
 #
-# Two tokens: PROJECTS_TOKEN reads the project Commitment field; GITHUB_TOKEN labels as the bot.
+# Two tokens: PROJECTS_TOKEN reads project fields; GITHUB_TOKEN labels as github-actions[bot].
 name: Flag commitment risk
 
 on:
   schedule:
-    - cron: "30 5 * * *"    # daily 05:30 UTC (after reconcile, before overdue)
+    - cron: "30 5 * * *"    # daily 05:30 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -23,11 +24,11 @@ jobs:
           github-token: ${{ secrets.PROJECTS_TOKEN }}
           script: |
             // second client on the default token so label ops are authored by github-actions[bot].
-            // (github-script can't `require('@actions/github')`; reuse the running client's class.)
             let bot;
             try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
-            catch (e) { bot = github; }   // fall back to the PAT client rather than break the run
-            const now = new Date();
+            catch (e) { bot = github; }
+
+            const today = new Date(); today.setUTCHours(0, 0, 0, 0);
             const RISK = "commitment-risk";
 
             const issues = await github.paginate(
@@ -38,36 +39,29 @@ jobs:
             for (const issue of issues) {
               if (issue.pull_request) continue;
 
-              // milestone missing, or has a due date that already passed
-              const due = issue.milestone && issue.milestone.due_on
-                ? new Date(issue.milestone.due_on) : null;
-              const milestoneBad = (issue.milestone == null) || (due !== null && due < now);
-
-              // is this issue Committed in any project it belongs to?
               const data = await github.graphql(`
-                query($id:ID!){
-                  node(id:$id){ ... on Issue {
-                    projectItems(first:20){ nodes {
-                      fieldValueByName(name:"Commitment"){
-                        ... on ProjectV2ItemFieldSingleSelectValue { name }
-                      }
-                    } }
-                  } }
-                }`, { id: issue.node_id });
+                query($id:ID!){ node(id:$id){ ... on Issue {
+                  projectItems(first:20){ nodes { fieldValues(first:50){ nodes {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                    ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+                  } } } }
+                } } }`, { id: issue.node_id });
 
               const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
-              const committed = items.some(it => it.fieldValueByName && it.fieldValueByName.name === "Committed");
+              const risk = items.some(it => {
+                let committed = false, target = null;
+                for (const v of it.fieldValues.nodes) {
+                  if (!v || !v.field) continue;
+                  if (v.field.name === "Commitment" && v.name === "Committed") committed = true;
+                  if (v.field.name === "Target date" && v.date) target = v.date.slice(0, 10);
+                }
+                return committed && (!target || new Date(target) < today);
+              });
 
-              const risk = committed && milestoneBad;
-              const has  = (issue.labels || []).some(l => (l.name || l) === RISK);
-
+              const has = (issue.labels || []).some(l => (l.name || l) === RISK);
               if (risk && !has) {
-                await bot.rest.issues.addLabels({
-                  ...context.repo, issue_number: issue.number, labels: [RISK],
-                });
+                await bot.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: [RISK] });
               } else if (!risk && has) {
-                await bot.rest.issues.removeLabel({
-                  ...context.repo, issue_number: issue.number, name: RISK,
-                }).catch(() => {});
+                await bot.rest.issues.removeLabel({ ...context.repo, issue_number: issue.number, name: RISK }).catch(() => {});
               }
             }

@@ -1,11 +1,13 @@
-# Flags overdue issues: the milestone (YY.MM) due date has passed but the issue is still open.
-# Runs once a day on a schedule (and manually via the button).
+# Flags overdue issues: the project "Target date" has passed but the issue is open and not Done.
+# Re-based off native milestone onto the Target date field (which is derived from Release).
+#
+# Two tokens: PROJECTS_TOKEN reads project fields; GITHUB_TOKEN labels as github-actions[bot].
 name: Flag overdue issues
 
 on:
   schedule:
-    - cron: "0 6 * * *"     # every day at 06:00 UTC
-  workflow_dispatch: {}      # allows manual runs from the Actions tab
+    - cron: "0 6 * * *"     # daily 06:00 UTC
+  workflow_dispatch: {}
 
 jobs:
   flag:
@@ -14,32 +16,49 @@ jobs:
       issues: write
     steps:
       - uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
           script: |
-            const now = new Date();
+            // second client on the default token so label ops are authored by github-actions[bot].
+            let bot;
+            try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
+            catch (e) { bot = github; }
 
-            // fetch all open issues (paginated)
+            const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+
             const issues = await github.paginate(
               github.rest.issues.listForRepo,
               { ...context.repo, state: "open", per_page: 100 }
             );
 
             for (const issue of issues) {
-              if (issue.pull_request) continue;            // skip PRs
+              if (issue.pull_request) continue;
 
-              const due = issue.milestone && issue.milestone.due_on
-                ? new Date(issue.milestone.due_on) : null;
-              const overdue = due !== null && due < now;   // milestone due date passed
+              const data = await github.graphql(`
+                query($id:ID!){ node(id:$id){ ... on Issue {
+                  projectItems(first:20){ nodes { fieldValues(first:50){ nodes {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                    ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+                  } } } }
+                } } }`, { id: issue.node_id });
+
+              const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
+              const overdue = items.some(it => {
+                let target = null, status = null;
+                for (const v of it.fieldValues.nodes) {
+                  if (!v || !v.field) continue;
+                  if (v.field.name === "Target date" && v.date) target = v.date.slice(0, 10);
+                  if (v.field.name === "Status" && v.name) status = v.name;
+                }
+                return target && new Date(target) < today && status !== "Done";
+              });
 
               const has = (issue.labels || []).some(l => (l.name || l) === "overdue");
-
               if (overdue && !has) {
-                await github.rest.issues.addLabels({
-                  ...context.repo, issue_number: issue.number, labels: ["overdue"],
-                });
+                await bot.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: ["overdue"] });
               } else if (!overdue && has) {
-                await github.rest.issues.removeLabel({
-                  ...context.repo, issue_number: issue.number, name: "overdue",
-                }).catch(() => {});
+                await bot.rest.issues.removeLabel({ ...context.repo, issue_number: issue.number, name: "overdue" }).catch(() => {});
               }
             }
