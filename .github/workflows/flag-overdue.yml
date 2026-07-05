@@ -1,7 +1,6 @@
-# Flags overdue issues: the project "Target date" has passed but the issue is open and not Done.
-# Re-based off native milestone onto the Target date field (which is derived from Release).
-#
-# Two tokens: PROJECTS_TOKEN reads project fields; GITHUB_TOKEN labels as github-actions[bot].
+# Flags overdue issues: the milestone (YY.MM) due date has passed but the issue is still open.
+# The milestone is derived from the Release field by sync-milestone-from-release.yml, so this is
+# back to reading the native milestone due date. Labels as github-actions[bot] (default token).
 name: Flag overdue issues
 
 on:
@@ -16,49 +15,24 @@ jobs:
       issues: write
     steps:
       - uses: actions/github-script@v7
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          github-token: ${{ secrets.PROJECTS_TOKEN }}
           script: |
-            // second client on the default token so label ops are authored by github-actions[bot].
-            let bot;
-            try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
-            catch (e) { bot = github; }
-
-            const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+            const now = new Date();
 
             const issues = await github.paginate(
-              github.rest.issues.listForRepo,
-              { ...context.repo, state: "open", per_page: 100 }
+              github.rest.issues.listForRepo, { ...context.repo, state: "open", per_page: 100 }
             );
 
             for (const issue of issues) {
               if (issue.pull_request) continue;
 
-              const data = await github.graphql(`
-                query($id:ID!){ node(id:$id){ ... on Issue {
-                  projectItems(first:20){ nodes { fieldValues(first:50){ nodes {
-                    ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
-                    ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
-                  } } } }
-                } } }`, { id: issue.node_id });
-
-              const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
-              const overdue = items.some(it => {
-                let target = null, status = null;
-                for (const v of it.fieldValues.nodes) {
-                  if (!v || !v.field) continue;
-                  if (v.field.name === "Target date" && v.date) target = v.date.slice(0, 10);
-                  if (v.field.name === "Status" && v.name) status = v.name;
-                }
-                return target && new Date(target) < today && status !== "Done";
-              });
+              const due = issue.milestone && issue.milestone.due_on ? new Date(issue.milestone.due_on) : null;
+              const overdue = due !== null && due < now;
 
               const has = (issue.labels || []).some(l => (l.name || l) === "overdue");
               if (overdue && !has) {
-                await bot.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: ["overdue"] });
+                await github.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: ["overdue"] });
               } else if (!overdue && has) {
-                await bot.rest.issues.removeLabel({ ...context.repo, issue_number: issue.number, name: "overdue" }).catch(() => {});
+                await github.rest.issues.removeLabel({ ...context.repo, issue_number: issue.number, name: "overdue" }).catch(() => {});
               }
             }

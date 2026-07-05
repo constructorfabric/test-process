@@ -1,0 +1,66 @@
+# Release is the source of truth; the native milestone is its mirror (so the release shows on the
+# issue itself and carries a due date). For each issue this reads the Release field (YY.MM) and sets
+# the issue's milestone to a repo milestone of the same name, creating it (due = last day of month)
+# if missing. Release wins: an issue whose milestone disagrees with its Release is corrected.
+#
+# NOTE: project-field edits fire no Actions event, so this can't be instant -- it runs on a schedule
+# (+ the "Run workflow" button for on-demand). Uses PROJECTS_TOKEN (reads project, writes issues/milestones).
+name: Sync milestone from Release
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 min (GitHub may delay scheduled runs; use Run workflow for instant)
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
+          script: |
+            // repo milestones by title (create-on-demand)
+            const existing = await github.paginate(
+              github.rest.issues.listMilestones, { ...context.repo, state: "all", per_page: 100 }
+            );
+            const byTitle = {};
+            for (const m of existing) byTitle[m.title] = m;
+
+            async function ensureMilestone(rel) {
+              if (byTitle[rel]) return byTitle[rel];
+              const m = rel.match(/^(\d{2})\.(\d{2})$/);
+              const due = new Date(Date.UTC(2000 + parseInt(m[1], 10), parseInt(m[2], 10), 0)).toISOString();
+              const created = await github.rest.issues.createMilestone({ ...context.repo, title: rel, due_on: due });
+              byTitle[rel] = created.data;
+              return created.data;
+            }
+
+            const issues = await github.paginate(
+              github.rest.issues.listForRepo, { ...context.repo, state: "open", per_page: 100 }
+            );
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+
+              // read the Release value from any project the issue is on
+              const data = await github.graphql(`
+                query($id:ID!){ node(id:$id){ ... on Issue {
+                  projectItems(first:20){ nodes { fieldValues(first:50){ nodes {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                  } } } }
+                } } }`, { id: issue.node_id });
+
+              const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
+              let release = null;
+              for (const it of items) for (const v of it.fieldValues.nodes) {
+                if (v && v.field && v.field.name === "Release" && v.name) release = v.name;
+              }
+              if (!release || !/^\d{2}\.\d{2}$/.test(release)) continue;   // no Release -> leave milestone alone
+
+              const ms = await ensureMilestone(release);
+              const current = issue.milestone && issue.milestone.title;
+              if (current !== release) {
+                await github.rest.issues.update({ ...context.repo, issue_number: issue.number, milestone: ms.number });
+              }
+            }

@@ -1,9 +1,6 @@
-# Flags a broken planning promise: an issue whose project "Commitment" = Committed but whose
-# "Target date" is missing or already passed. A Committed item must carry a live date --
-# this detects (not prevents) the cases where it doesn't. Adds/removes the commitment-risk label.
-# (Re-based off native milestone onto the Target date field, which is derived from Release.)
-#
-# Two tokens: PROJECTS_TOKEN reads project fields; GITHUB_TOKEN labels as github-actions[bot].
+# Flags a broken planning promise: Commitment = Committed but the milestone is missing or overdue.
+# The milestone is derived from Release (sync-milestone-from-release.yml), so this reads the native
+# milestone due date again. Two tokens: PROJECTS_TOKEN reads Commitment; GITHUB_TOKEN labels as the bot.
 name: Flag commitment risk
 
 on:
@@ -28,36 +25,30 @@ jobs:
             try { bot = new (github.constructor)({ auth: process.env.GH_TOKEN }); }
             catch (e) { bot = github; }
 
-            const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+            const now = new Date();
             const RISK = "commitment-risk";
 
             const issues = await github.paginate(
-              github.rest.issues.listForRepo,
-              { ...context.repo, state: "open", per_page: 100 }
+              github.rest.issues.listForRepo, { ...context.repo, state: "open", per_page: 100 }
             );
 
             for (const issue of issues) {
               if (issue.pull_request) continue;
 
+              const due = issue.milestone && issue.milestone.due_on ? new Date(issue.milestone.due_on) : null;
+              const milestoneBad = (issue.milestone == null) || (due !== null && due < now);
+
               const data = await github.graphql(`
                 query($id:ID!){ node(id:$id){ ... on Issue {
-                  projectItems(first:20){ nodes { fieldValues(first:50){ nodes {
-                    ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
-                    ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
-                  } } } }
+                  projectItems(first:20){ nodes {
+                    fieldValueByName(name:"Commitment"){ ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                  } }
                 } } }`, { id: issue.node_id });
 
               const items = (data.node && data.node.projectItems && data.node.projectItems.nodes) || [];
-              const risk = items.some(it => {
-                let committed = false, target = null;
-                for (const v of it.fieldValues.nodes) {
-                  if (!v || !v.field) continue;
-                  if (v.field.name === "Commitment" && v.name === "Committed") committed = true;
-                  if (v.field.name === "Target date" && v.date) target = v.date.slice(0, 10);
-                }
-                return committed && (!target || new Date(target) < today);
-              });
+              const committed = items.some(it => it.fieldValueByName && it.fieldValueByName.name === "Committed");
 
+              const risk = committed && milestoneBad;
               const has = (issue.labels || []).some(l => (l.name || l) === RISK);
               if (risk && !has) {
                 await bot.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: [RISK] });
